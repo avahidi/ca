@@ -11,7 +11,7 @@ How to install
 
 Build from source code::
 
-    go install github.com/avahidi/CA@latest
+    go install github.com/avahidi/ca@latest
 
 
 How to use it
