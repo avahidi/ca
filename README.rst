@@ -43,8 +43,22 @@ Here are some other aliases you can try::
     # get our IP but don't cache. Some sites check for curl user-agent
     $ alias me="ca -f -A 'curl/7.88.1' ifconfig.me"
 
-    # and our city...
+    # In case you wake up and have no idea where you are...
     $ alias city="ca ifconfig.co/city"
 
     # guess what this one does...
     $ alias weather="ca -age=120 wttr.in/Berlin"
+
+    # I don't own any crypto, but in case you do...
+    $ alias broke="ca -age=60 rate.sx/ETH"
+
+    # whois light?
+    $ alias where?="ca -f -A '' -prefix=ipinfo.io/"
+    $ where? 127.0.0.1
+    $ where? 8.8.4.4
+
+    # QR codes:
+    $ alias qrcode="ca -age=99999 --prefix=qrenco.de/"
+    $ qrcode "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+For more examples see https://github.com/chubin/awesome-console-services
