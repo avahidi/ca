@@ -11,18 +11,28 @@ import (
 	"os"
 	"os/exec"
 	"path"
-	"strings"
 	"time"
 )
 
 const TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
-const TIME_FAILURE_CACHE time.Duration = 2 * time.Hour
-
-var BASE_OPTIONS = []string{"--silent", "-A", "Curl via CA v0.1"}
 
 var cacheBase, historyFile, configFile string
 
-// config contains general app configuration
+// MultiFlag is a flag value that can be added multiple times
+type MultiFlag []string
+
+// Set implementation for flag.Value interface
+func (m *MultiFlag) Set(value string) error {
+	*m = append(*m, value)
+	return nil
+}
+
+// String implementation for flag.Value interface
+func (m MultiFlag) String() string {
+	return "[?]"
+}
+
+// Config contains general app configuration
 type Config struct {
 	Curl string
 }
@@ -92,14 +102,15 @@ func (q Query) CacheFolder() string {
 	return path.Join(cacheBase, q.HostId)
 }
 
-func (q Query) CacheCheck() (exists bool, isRecent bool) {
+func (q Query) CacheCheck(maxAge int) (exists bool, isRecent bool) {
 	filename := q.CacheFile()
 	info, err := os.Stat(filename)
 	if err != nil {
 		return false, false
 	}
 
-	return true, time.Since(info.ModTime()) < TIME_DATA_CACHE
+	age := time.Since(info.ModTime()).Minutes()
+	return true, age <= float64(maxAge)
 }
 
 func (q Query) CacheRead() ([]byte, error) {
@@ -120,7 +131,7 @@ func (q Query) CacheWrite(content []byte) error {
 func (q *Query) Get(c *Config, options []string) ([]byte, error) {
 	args := append(options, q.Url.String())
 	cmd := exec.Command(c.Curl, args...)
-	return cmd.Output() // cmd.CombinedOutput()
+	return cmd.Output()
 }
 
 func recordHistory(q *Query, mode string) error {
@@ -130,7 +141,7 @@ func recordHistory(q *Query, mode string) error {
 	}
 
 	defer f.Close()
-	_, err = fmt.Fprintf(f, "%v - %s - %v\n", time.Now().Format(time.RFC3339), mode, q.Url)
+	_, err = fmt.Fprintf(f, "%v\t%s\t%v\n", time.Now().Format(time.RFC3339), mode, q.Url)
 	return err
 }
 
@@ -151,30 +162,58 @@ func setup() (cache_dir, history_file, config_file string) {
 	return
 }
 
-func usage() {
-	fmt.Fprintf(os.Stderr, "Usage:\n"+
-		"    %s [--prefix=<prefix>] [--o=<flag>] <query>\n"+
-		"    %s --purge",
-		os.Args[0], os.Args[0],
-	)
-	flag.PrintDefaults()
+// Params contains the parameters used for this call
+type Params struct {
+	Options    []string
+	Query      string
+	CacheRead  bool
+	CacheWrite bool
+	MaxAge     int
+	Verbose    bool
 }
 
-func parseArgs() (query string, options []string) {
+// parseParams will parse command line arguments and build the parameters
+func parseParams() *Params {
+	var options MultiFlag
+
+	flag.Var(&options, "o", "Additional options for curl")
 	prefix_ := flag.String("prefix", "", "Optional query prefix")
-	options_ := flag.String("o", "", "Additional options for curl")
-	purge_ := flag.Bool("purge", false, "Purge old cache entries and exit")
+	agent_ := flag.String("A", "CA-via-Curl/0.1", "User Agent. Empty -> use Curl UA")
+	noread_ := flag.Bool("f", false, "Force download, do not read from cache")
+	nowrite_ := flag.Bool("no-write", false, "Do not write to cache")
+	verbose_ := flag.Bool("v", false, "be verbose")
+	maxage_ := flag.Int("age", 3*24, "max cache age in minutes")
+
 	flag.Usage = usage
 	flag.Parse()
 
-	if *purge_ {
-		log.Panic("purge not implemented")
-	}
 	if len(flag.Args()) != 1 {
 		flag.Usage()
 		os.Exit(1)
 	}
-	return *prefix_ + flag.Args()[0], strings.Fields(*options_)
+
+	// add base options to user options
+	options = append(options, "--silent")
+	if *agent_ != "" {
+		options = append(options, "-A", *agent_)
+	}
+
+	return &Params{
+		Options:    options,
+		Query:      *prefix_ + flag.Args()[0],
+		Verbose:    *verbose_,
+		MaxAge:     *maxage_,
+		CacheRead:  !*noread_,
+		CacheWrite: !*nowrite_,
+	}
+}
+
+func usage() {
+	fmt.Fprintf(os.Stderr, "Usage:\n"+
+		"    %s [OPTIONS] <query>\n"+
+		"Where OPTIONS are:\n",
+		os.Args[0])
+	flag.PrintDefaults()
 }
 
 func main() {
@@ -185,17 +224,22 @@ func main() {
 	config.Load(configFile)
 	config.Save(configFile)
 
-	queryStr, options := parseArgs()
-	options = append(options, BASE_OPTIONS...)
+	params := parseParams()
 
-	query, err := NewQuery(queryStr)
+	query, err := NewQuery(params.Query)
 	if err != nil {
-		log.Fatalf("Invalid URLL '%s': %v\n", queryStr, err)
+		log.Fatalf("Invalid URLL '%s': %v\n", params.Query, err)
+	}
+
+	// try get data from cache, if possible and allowed
+	var cexist, crecent bool
+	if params.CacheRead {
+		cexist, crecent = query.CacheCheck(params.MaxAge)
 	}
 
 	var content []byte
 	var mode string
-	cexist, crecent := query.CacheCheck()
+
 	if cexist && crecent {
 		mode = "cached"
 		content, err = query.CacheRead()
@@ -204,7 +248,7 @@ func main() {
 		}
 	} else {
 		mode = "received"
-		content, err = query.Get(config, options)
+		content, err = query.Get(config, params.Options)
 		if err != nil {
 			if cexist {
 				mode = "cache-backup"
@@ -216,13 +260,18 @@ func main() {
 			} else {
 				log.Fatalf("Failed to get content from server: %v\n", err)
 			}
-		} else {
+		} else if params.CacheWrite {
 			err = query.CacheWrite(content)
 			if err != nil {
 				log.Printf("Unable to write to cache: %v\n", err)
 			}
 		}
 	}
+
+	// update mode with cache read/write state
+	mode = fmt.Sprintf("%s R=%v W=%v", mode, params.CacheRead, params.CacheWrite)
+
+	// update history file and print outcome
 	recordHistory(query, mode)
-	fmt.Printf("%s", string(content))
+	fmt.Printf("%s\n", string(content))
 }

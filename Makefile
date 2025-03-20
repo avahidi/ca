@@ -7,6 +7,9 @@ build/ca: *.go
 run: build/ca
 	build/ca --prefix https://cht.sh/go/ strings
 
+fmt:
+	go fmt ./...
+
 build:
 	mkdir build
 
