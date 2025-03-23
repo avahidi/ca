@@ -1,0 +1,12 @@
+# built in targets
+go,entry,P=https://cht.sh/go/
+news,,M=30,A=,http://getnews.tech
+ip,,F,A=,ifconfig.me
+city,,ifconfig.co/city
+
+weather,,M=120,wttr.in/
+weather,city,M=120,P=wttr.in/
+eth,,M=60,rate.sx/ETH
+btc,,M=60,rate.sx/BTC
+whois,what,F,A=,P=ipinfo.io/
+qrcode,item,M=99999,P=qrenco.de/

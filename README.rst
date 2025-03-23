@@ -11,6 +11,7 @@ How to install
 
 Build from source code::
 
+    sudo apt install golang curl
     go install github.com/avahidi/ca@latest
 
 
@@ -62,3 +63,19 @@ Here are some other aliases you can try::
     $ qrcode "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 For more examples see https://github.com/chubin/awesome-console-services
+
+Builtins
+--------
+
+To get you started, CA comes with a few "builtin" queries::
+
+    $ ca @weather
+    $ ca @weather dublin
+    $ ca @go slices
+    $ ca @btc
+
+To see all available builtins::
+
+   $ ca @help
+
+To add your own, see the configuration file (~/.config/ca.conf).

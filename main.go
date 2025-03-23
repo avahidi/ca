@@ -13,21 +13,26 @@ import (
 	"time"
 )
 
+// TIME_DATA_CACHE is the default age for a cached entry
 const TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
 
 // Config contains general app configuration
 type Config struct {
 	filename string
 	Curl     string
+	Builtins []string
 }
 
+// NewConfig create a new configuration with default parameters
 func NewConfig(filename string) *Config {
 	return &Config{
 		filename: filename,
 		Curl:     "/usr/bin/curl",
+		Builtins: defaultBuiltins(),
 	}
 }
 
+// Load will try read configuration from disk
 func (c *Config) Load() error {
 	file, err := os.Open(c.filename)
 	if err != nil {
@@ -39,15 +44,14 @@ func (c *Config) Load() error {
 	return decoder.Decode(c)
 }
 
+// Save will write configuration to disk
 func (c Config) Save() error {
-	file, err := os.Create(c.filename)
+	bs, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	return encoder.Encode(&c)
+	return os.WriteFile(c.filename, bs, 0700)
 }
 
 // Query is a helper class for the URL being accessed
@@ -57,6 +61,7 @@ type Query struct {
 	PathId string
 }
 
+// NewQuery creates a new Query from an url
 func NewQuery(urlstr string) (*Query, error) {
 	url, err := url.Parse(urlstr)
 	if err != nil {
@@ -177,9 +182,9 @@ type Params struct {
 }
 
 // parseParams will parse command line arguments and build the parameters
+// this function will first look for a @builtin and if found rewrite the parameters
 func parseParams() *Params {
 	var options MultiFlag
-
 	flag.Var(&options, "o", "Additional options for curl")
 	prefix_ := flag.String("prefix", "", "Optional query prefix")
 	agent_ := flag.String("A", "CA-via-Curl/0.1", "User Agent, set \"\" to use Curl UA")
@@ -215,8 +220,9 @@ func parseParams() *Params {
 func usage() {
 	fmt.Fprintf(os.Stderr, "Usage:\n"+
 		"    %s [OPTIONS] <query>\n"+
+		"    %s @<builtin> [optional parameter]\n"+
 		"Where OPTIONS are:\n",
-		os.Args[0])
+		os.Args[0], os.Args[0])
 	flag.PrintDefaults()
 }
 
@@ -225,8 +231,17 @@ func main() {
 
 	// Load configuration
 	config := app.Config
-	config.Load()
-	config.Save()
+	if err := config.Load(); err != nil {
+		log.Printf("WARNING: failed to load config: %v", err)
+		config.Save() // config was just created, save it!
+	}
+
+	// before we parse parameters, see if this is a @builtin which has a different syntax
+	if ArgsIsBuiltin() {
+		if err := RewriteArgsFromBuiltin(config.Builtins); err != nil {
+			log.Fatalf("FAILED: %v\n", err)
+		}
+	}
 
 	params := parseParams()
 

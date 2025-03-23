@@ -10,6 +10,9 @@ run: build/ca
 fmt:
 	go fmt ./...
 
+vet:
+	go vet ./...
+
 build:
 	mkdir build
 
