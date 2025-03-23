@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
@@ -16,33 +15,21 @@ import (
 
 const TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
 
-var cacheBase, configFile string
-
-// MultiFlag is a flag value that can be added multiple times
-type MultiFlag []string
-
-// Set implementation for flag.Value interface
-func (m *MultiFlag) Set(value string) error {
-	*m = append(*m, value)
-	return nil
-}
-
-// String implementation for flag.Value interface
-func (m MultiFlag) String() string {
-	return "[?]"
-}
-
 // Config contains general app configuration
 type Config struct {
-	Curl string
+	filename string
+	Curl     string
 }
 
-func NewConfig() *Config {
-	return &Config{Curl: "/usr/bin/curl"}
+func NewConfig(filename string) *Config {
+	return &Config{
+		filename: filename,
+		Curl:     "/usr/bin/curl",
+	}
 }
 
-func (c *Config) Load(filename string) error {
-	file, err := os.Open(filename)
+func (c *Config) Load() error {
+	file, err := os.Open(c.filename)
 	if err != nil {
 		return err
 	}
@@ -52,8 +39,8 @@ func (c *Config) Load(filename string) error {
 	return decoder.Decode(c)
 }
 
-func (c Config) Save(filename string) error {
-	file, err := os.Create(filename)
+func (c Config) Save() error {
+	file, err := os.Create(c.filename)
 	if err != nil {
 		return err
 	}
@@ -94,17 +81,31 @@ func NewQuery(urlstr string) (*Query, error) {
 	}, nil
 }
 
-func (q Query) CacheFile() string {
-	return path.Join(cacheBase, q.HostId, q.PathId)
+func (q *Query) Get(c *Config, options []string) ([]byte, error) {
+	args := append(options, q.Url.String())
+	cmd := exec.Command(c.Curl, args...)
+	return cmd.Output()
 }
 
-func (q Query) CacheFolder() string {
-	return path.Join(cacheBase, q.HostId)
+// Cache represents our cache system
+type Cache struct {
+	base string
 }
 
-func (q Query) CacheCheck(maxAge int) (exists bool, isRecent bool) {
-	filename := q.CacheFile()
-	info, err := os.Stat(filename)
+func NewCache(base string) *Cache {
+	return &Cache{base: base}
+}
+
+func (c Cache) file(q Query) string {
+	return path.Join(c.base, q.HostId, q.PathId)
+}
+
+func (c Cache) folder(q Query) string {
+	return path.Join(c.base, q.HostId)
+}
+
+func (c Cache) Check(q Query, maxAge int) (exists bool, isRecent bool) {
+	info, err := os.Stat(c.file(q))
 	if err != nil {
 		return false, false
 	}
@@ -113,41 +114,56 @@ func (q Query) CacheCheck(maxAge int) (exists bool, isRecent bool) {
 	return true, age <= float64(maxAge)
 }
 
-func (q Query) CacheRead() ([]byte, error) {
-	filename := q.CacheFile()
-	return ioutil.ReadFile(filename)
+func (c Cache) Read(q Query) ([]byte, error) {
+	return os.ReadFile(c.file(q))
 }
 
-func (q Query) CacheWrite(content []byte) error {
-	folder := q.CacheFolder()
+func (c Cache) Write(q Query, content []byte) error {
+	folder := c.folder(q)
 	if err := os.MkdirAll(folder, 0700); err != nil {
 		return err
 	}
 
-	filename := q.CacheFile()
-	return ioutil.WriteFile(filename, content, 0600)
+	filename := c.file(q)
+	return os.WriteFile(filename, content, 0600)
 }
 
-func (q *Query) Get(c *Config, options []string) ([]byte, error) {
-	args := append(options, q.Url.String())
-	cmd := exec.Command(c.Curl, args...)
-	return cmd.Output()
+// Application represents the application contect
+type Application struct {
+	Cache  *Cache
+	Config *Config
 }
 
-func setup() (cache_dir, config_file string) {
+func NewApplication() *Application {
 	// set up the relevant folders and
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Panic(err)
 	}
 
-	cache_dir = path.Join(home, ".cache/ca")
-	config_file = path.Join(home, ".config/ca.conf")
+	a := &Application{
+		Cache:  NewCache(path.Join(home, ".cache/ca")),
+		Config: NewConfig(path.Join(home, ".config/ca.conf")),
+	}
 
-	if err := os.MkdirAll(cache_dir, 0700); err != nil {
+	if err := os.MkdirAll(a.Cache.base, 0700); err != nil {
 		log.Panic(err)
 	}
-	return
+	return a
+}
+
+// MultiFlag is a flag value that can be added multiple times
+type MultiFlag []string
+
+// Set implementation for flag.Value interface
+func (m *MultiFlag) Set(value string) error {
+	*m = append(*m, value)
+	return nil
+}
+
+// String implementation for flag.Value interface
+func (m MultiFlag) String() string {
+	return "[?]"
 }
 
 // Params contains the parameters used for this call
@@ -166,11 +182,11 @@ func parseParams() *Params {
 
 	flag.Var(&options, "o", "Additional options for curl")
 	prefix_ := flag.String("prefix", "", "Optional query prefix")
-	agent_ := flag.String("A", "CA-via-Curl/0.1", "User Agent. Empty -> use Curl UA")
-	noread_ := flag.Bool("f", false, "Force download, do not read from cache")
-	nowrite_ := flag.Bool("no-write", false, "Do not write to cache")
-	verbose_ := flag.Bool("v", false, "be verbose")
-	maxage_ := flag.Int("age", 3*24, "max cache age in minutes")
+	agent_ := flag.String("A", "CA-via-Curl/0.1", "User Agent, set \"\" to use Curl UA")
+	noread_ := flag.Bool("f", false, "Force download (do not read from cache)")
+	nowrite_ := flag.Bool("n", false, "Do not write to cache")
+	verbose_ := flag.Bool("v", false, "Be verbose")
+	maxage_ := flag.Int("age", 3*24, "Max cache age in minutes")
 
 	flag.Usage = usage
 	flag.Parse()
@@ -205,12 +221,12 @@ func usage() {
 }
 
 func main() {
-	cacheBase, configFile = setup()
+	app := NewApplication()
 
 	// Load configuration
-	config := NewConfig()
-	config.Load(configFile)
-	config.Save(configFile)
+	config := app.Config
+	config.Load()
+	config.Save()
 
 	params := parseParams()
 
@@ -220,9 +236,10 @@ func main() {
 	}
 
 	// try get data from cache, if possible and allowed
+	cache := app.Cache
 	var cexist, crecent bool
 	if params.CacheRead {
-		cexist, crecent = query.CacheCheck(params.MaxAge)
+		cexist, crecent = cache.Check(*query, params.MaxAge)
 	}
 
 	var content []byte
@@ -230,7 +247,7 @@ func main() {
 
 	if cexist && crecent {
 		mode = "cached"
-		content, err = query.CacheRead()
+		content, err = cache.Read(*query)
 		if err != nil {
 			log.Fatalf("Failed to read content from cache: %v\n", err)
 		}
@@ -241,7 +258,7 @@ func main() {
 			if cexist {
 				mode = "cache-backup"
 				log.Printf("Using old cache due to server failure: %v\n", err)
-				content, err = query.CacheRead()
+				content, err = cache.Read(*query)
 				if err != nil {
 					log.Fatalf("Failed to read content from cache: %v\n", err)
 				}
@@ -249,7 +266,7 @@ func main() {
 				log.Fatalf("Failed to get content from server: %v\n", err)
 			}
 		} else if params.CacheWrite {
-			err = query.CacheWrite(content)
+			err = cache.Write(*query, content)
 			if err != nil {
 				log.Printf("Unable to write to cache: %v\n", err)
 			}
