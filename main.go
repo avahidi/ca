@@ -16,7 +16,7 @@ import (
 
 const TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
 
-var cacheBase, historyFile, configFile string
+var cacheBase, configFile string
 
 // MultiFlag is a flag value that can be added multiple times
 type MultiFlag []string
@@ -134,18 +134,7 @@ func (q *Query) Get(c *Config, options []string) ([]byte, error) {
 	return cmd.Output()
 }
 
-func recordHistory(q *Query, mode string) error {
-	f, err := os.OpenFile(historyFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
-	if err != nil {
-		return err
-	}
-
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "%v\t%s\t%v\n", time.Now().Format(time.RFC3339), mode, q.Url)
-	return err
-}
-
-func setup() (cache_dir, history_file, config_file string) {
+func setup() (cache_dir, config_file string) {
 	// set up the relevant folders and
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -153,7 +142,6 @@ func setup() (cache_dir, history_file, config_file string) {
 	}
 
 	cache_dir = path.Join(home, ".cache/ca")
-	history_file = path.Join(home, ".cache/ca/history")
 	config_file = path.Join(home, ".config/ca.conf")
 
 	if err := os.MkdirAll(cache_dir, 0700); err != nil {
@@ -217,7 +205,7 @@ func usage() {
 }
 
 func main() {
-	cacheBase, historyFile, configFile = setup()
+	cacheBase, configFile = setup()
 
 	// Load configuration
 	config := NewConfig()
@@ -269,9 +257,10 @@ func main() {
 	}
 
 	// update mode with cache read/write state
-	mode = fmt.Sprintf("%s R=%v W=%v", mode, params.CacheRead, params.CacheWrite)
+	if params.Verbose {
+		fmt.Printf("%s R=%v W=%v", mode, params.CacheRead, params.CacheWrite)
+	}
 
-	// update history file and print outcome
-	recordHistory(query, mode)
+	// print outcome
 	fmt.Printf("%s\n", string(content))
 }
