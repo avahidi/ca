@@ -1,11 +1,11 @@
 
-compile: build build/ca
+compile: bin bin/ca
 
-build/ca: *.go
-	go build -o build/ca
+bin/ca: *.go
+	go build -o bin/ca
 
-run: build/ca
-	build/ca --prefix https://cht.sh/go/ strings
+run: bin/ca
+	bin/ca --prefix https://cht.sh/go/ strings
 
 fmt:
 	go fmt ./...
@@ -13,8 +13,11 @@ fmt:
 vet:
 	go vet ./...
 
-build:
-	mkdir build
+test:
+	go test ./...
+
+bin:
+	mkdir bin
 
 clean:
-	rm -rf build
+	rm -rf bin

@@ -56,14 +56,15 @@ func (c Config) Save() error {
 
 // Query is a helper class for the URL being accessed
 type Query struct {
+	params *Params
 	Url    *url.URL
 	HostId string
 	PathId string
 }
 
 // NewQuery creates a new Query from an url
-func NewQuery(urlstr string) (*Query, error) {
-	url, err := url.Parse(urlstr)
+func NewQuery(p *Params) (*Query, error) {
+	url, err := url.Parse(p.Prefix + p.Query)
 	if err != nil {
 		return nil, err
 	}
@@ -80,14 +81,23 @@ func NewQuery(urlstr string) (*Query, error) {
 	}
 
 	return &Query{
+		params: p,
 		Url:    url,
 		HostId: base64.URLEncoding.EncodeToString([]byte(host)),
 		PathId: base64.URLEncoding.EncodeToString([]byte(path)),
 	}, nil
 }
 
-func (q *Query) Get(c *Config, options []string) ([]byte, error) {
-	args := append(options, q.Url.String())
+func (q Query) Get(c *Config) ([]byte, error) {
+	args := []string{"--silent"}
+	if q.params.UserAgent != "" {
+		args = append(args, "-A", q.params.UserAgent)
+	}
+	args = append(args, q.Url.String())
+	if q.params.Verbose {
+		fmt.Printf("INFO: calling curl with '%v'\n", args)
+	}
+
 	cmd := exec.Command(c.Curl, args...)
 	return cmd.Output()
 }
@@ -157,24 +167,11 @@ func NewApplication() *Application {
 	return a
 }
 
-// MultiFlag is a flag value that can be added multiple times
-type MultiFlag []string
-
-// Set implementation for flag.Value interface
-func (m *MultiFlag) Set(value string) error {
-	*m = append(*m, value)
-	return nil
-}
-
-// String implementation for flag.Value interface
-func (m MultiFlag) String() string {
-	return "[?]"
-}
-
 // Params contains the parameters used for this call
 type Params struct {
-	Options    []string
+	UserAgent  string
 	Query      string
+	Prefix     string
 	CacheRead  bool
 	CacheWrite bool
 	MaxAge     int
@@ -183,9 +180,7 @@ type Params struct {
 
 // parseParams will parse command line arguments and build the parameters
 // this function will first look for a @builtin and if found rewrite the parameters
-func parseParams() *Params {
-	var options MultiFlag
-	flag.Var(&options, "o", "Additional options for curl")
+func parseParams(builtins []string) *Params {
 	prefix_ := flag.String("prefix", "", "Optional query prefix")
 	agent_ := flag.String("A", "CA-via-Curl/0.1", "User Agent, set \"\" to use Curl UA")
 	noread_ := flag.Bool("f", false, "Force download (do not read from cache)")
@@ -196,25 +191,30 @@ func parseParams() *Params {
 	flag.Usage = usage
 	flag.Parse()
 
-	if len(flag.Args()) != 1 {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	// add base options to user options
-	options = append(options, "--silent")
-	if *agent_ != "" {
-		options = append(options, "-A", *agent_)
-	}
-
-	return &Params{
-		Options:    options,
-		Query:      *prefix_ + flag.Args()[0],
+	p := &Params{
+		UserAgent:  *agent_,
+		Prefix:     *prefix_,
 		Verbose:    *verbose_,
 		MaxAge:     *maxage_,
 		CacheRead:  !*noread_,
 		CacheWrite: !*nowrite_,
 	}
+
+	args := flag.Args()
+	if ArgsIsBuiltin(args) {
+		if err := LoadFromBuiltin(p, builtins, args); err != nil {
+			fmt.Printf("%v\n", err)
+			flag.Usage()
+			os.Exit(1)
+		}
+	} else {
+		if len(args) != 1 {
+			flag.Usage()
+			os.Exit(1)
+		}
+		p.Query = args[0]
+	}
+	return p
 }
 
 func usage() {
@@ -236,18 +236,11 @@ func main() {
 		config.Save() // config was just created, save it!
 	}
 
-	// before we parse parameters, see if this is a @builtin which has a different syntax
-	if ArgsIsBuiltin() {
-		if err := RewriteArgsFromBuiltin(config.Builtins); err != nil {
-			log.Fatalf("FAILED: %v\n", err)
-		}
-	}
+	params := parseParams(config.Builtins)
 
-	params := parseParams()
-
-	query, err := NewQuery(params.Query)
+	query, err := NewQuery(params)
 	if err != nil {
-		log.Fatalf("Invalid URLL '%s': %v\n", params.Query, err)
+		log.Fatalf("Cannot build query: %v\n", err)
 	}
 
 	// try get data from cache, if possible and allowed
@@ -268,7 +261,7 @@ func main() {
 		}
 	} else {
 		mode = "received"
-		content, err = query.Get(config, params.Options)
+		content, err = query.Get(config)
 		if err != nil {
 			if cexist {
 				mode = "cache-backup"
@@ -290,7 +283,7 @@ func main() {
 
 	// update mode with cache read/write state
 	if params.Verbose {
-		fmt.Printf("%s R=%v W=%v", mode, params.CacheRead, params.CacheWrite)
+		fmt.Printf("INFO: %s R=%v W=%v\n", mode, params.CacheRead, params.CacheWrite)
 	}
 
 	// print outcome

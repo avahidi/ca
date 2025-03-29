@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -45,10 +46,9 @@ func splitAndTrim(str, sep string) []string {
 	return strs
 }
 
-// loadEntries will read and convert entries, and filter them by name (if provided)
-// file entries look like this:
+// parseTemplates will read and convert entries. Each entry looks like this
 // name,optional parameter, component 1, ...
-func loadEntries(builtins []string, name string) [][]string {
+func parseTemplates(builtins []string) [][]string {
 	var ret [][]string
 
 	// Read the file line by line
@@ -60,67 +60,73 @@ func loadEntries(builtins []string, name string) [][]string {
 
 		items := splitAndTrim(line, ",")
 		if len(items) < 3 {
-			log.Printf("WATNING: invalid line in builtins: '%s'", line)
-		} else if name == "" || items[0] == name {
+			log.Printf("WARNING: invalid line in builtins: '%s'", line)
+		} else {
 			ret = append(ret, items)
 		}
 	}
 	return ret
 }
 
-// given 0 or more items, select the one with the correct number of parameters
-func selectOne(itemlist [][]string, count int) ([]string, error) {
-	var filtered [][]string
+// findTemplate finds the template with given name and possibly param
+func findTemplate(itemlist [][]string, name string, hasParam bool) ([]string, error) {
+	// 1. first finds the ones that match this target
+	var filterName [][]string
 	for _, items := range itemlist {
-		if (count == 1 && items[1] == "") || (count == 2 && items[1] != "") {
-			filtered = append(filtered, items)
+		if items[0] == name {
+			filterName = append(filterName, items)
+		}
+	}
+
+	if len(filterName) == 0 {
+		return nil, fmt.Errorf("no matching builtins found")
+	}
+
+	// 2. see if any of those has the correct number of args
+	var filterParam [][]string
+	for _, items := range filterName {
+		if hasParam == (items[1] != "") {
+			filterParam = append(filterParam, items)
 		}
 	}
 
 	// see what we got, try to return useful error messages
-	switch len(filtered) {
+	switch len(filterParam) {
 	case 0:
-		if len(itemlist) == 0 {
-			return nil, fmt.Errorf("no matching builtins found")
-		} else if count == 1 {
-			return nil, fmt.Errorf("no matching builtins found (one with a parameter exists)")
-		} else {
+		if hasParam {
 			return nil, fmt.Errorf("no matching builtins found (one without a parameter exist)")
+		} else {
+			return nil, fmt.Errorf("no matching builtins found (one with a parameter exists)")
 		}
 	case 1:
-		return filtered[0], nil
+		return filterParam[0], nil
 	default:
 		return nil, fmt.Errorf("multiple matching builtins found")
 	}
 }
 
-// itemsToArgs convert items in a builtin to commandline args
-func itemsToArgs(items []string, extraArgs []string) ([]string, error) {
-	all := append(items[2:], extraArgs...)
-	flags, query := all[:len(all)-1], all[len(all)-1]
-
-	var args []string
-	for _, flag := range flags {
-		if strings.HasPrefix(flag, "M=") {
-			args = append(args, "-age", flag[2:])
-		} else if strings.HasPrefix(flag, "P=") {
-			args = append(args, "-prefix", flag[2:])
-		} else if strings.HasPrefix(flag, "A=") {
-			args = append(args, "-A", flag[2:])
-		} else if flag == "F" {
-			args = append(args, "-f")
-		} else {
-			return nil, fmt.Errorf("unknown parameter in builtin: %s", flag)
+func applyTemplateItem(p *Params, item string) error {
+	if strings.HasPrefix(item, "M=") {
+		n, err := strconv.ParseInt(item[2:], 10, 32)
+		if err != nil {
+			return err
 		}
+		p.MaxAge = int(n)
+	} else if strings.HasPrefix(item, "P=") {
+		p.Prefix = item[2:]
+	} else if strings.HasPrefix(item, "A=") {
+		p.UserAgent = item[2:]
+	} else if item == "F" {
+		p.CacheRead = false
+	} else {
+		return fmt.Errorf("unknown parameter in builtin: %s", item)
 	}
-
-	// add query to end of our flags and return it as the new command line
-	return append(args, query), nil
+	return nil
 }
 
 // showBuiltins will dump all builtins
 func showBuiltins(builtins []string) {
-	itemlist := loadEntries(builtins, "")
+	itemlist := parseTemplates(builtins)
 
 	fmt.Printf("Valid items are:\n ")
 	for _, item := range itemlist {
@@ -128,9 +134,8 @@ func showBuiltins(builtins []string) {
 	}
 }
 
-// loadBuiltin will load the builtin matching the name and optional arg in params, and return corresponding command line params
-func loadBuiltin(params, builtins []string) ([]string, error) {
-	name := params[0][1:]
+func LoadFromBuiltin(p *Params, builtins, args []string) error {
+	name := args[0][1:]
 
 	// help is a special case
 	if name == "help" || name == "?" {
@@ -138,30 +143,29 @@ func loadBuiltin(params, builtins []string) ([]string, error) {
 		os.Exit(0)
 	}
 
-	itemlist := loadEntries(builtins, name)
-
-	selected, err := selectOne(itemlist, len(params))
-	if err != nil {
-		return nil, err
-	}
-
-	args, err := itemsToArgs(selected, params[1:])
-	return args, err
-}
-
-func RewriteArgsFromBuiltin(builtins []string) error {
-	args, err := loadBuiltin(os.Args[1:], builtins)
+	itemlist := parseTemplates(builtins)
+	template, err := findTemplate(itemlist, name, len(args) != 1)
 	if err != nil {
 		return err
 	}
-	// rewrite arguments so we can parse it like before
-	os.Args = append(os.Args[:1], args...)
+
+	if len(args) == 2 {
+		p.Query = args[1]
+	} else {
+		p.Query = template[len(template)-1]
+		template = template[:len(template)-1]
+	}
+	for _, s := range template[2:] {
+		if err := applyTemplateItem(p, s); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
 // returns true if the command line is of type 'progm @name [optional parameter]'
-func ArgsIsBuiltin() bool {
-	count := len(os.Args) - 1
-	return (count == 1 || count == 2) && os.Args[1][0] == '@'
+func ArgsIsBuiltin(args []string) bool {
+	count := len(args)
+	return (count == 1 || count == 2) && args[0][0] == '@'
 }
