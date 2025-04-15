@@ -3,7 +3,7 @@ CA
 
 CA is a local cache system for "curlable" sites such as cheat.sh.
 
-CA uses curl to download information per usual, but then caches the result for future access. This reduces server load and also makes pages accessible when offline.
+When CA downloads the information, it caches the result for future access. This reduces server load and also makes pages accessible when offline.
 
 
 How to install
@@ -11,7 +11,7 @@ How to install
 
 Build from source code::
 
-    sudo apt install golang curl
+    sudo apt install golang
     go install github.com/avahidi/ca@latest
 
 
@@ -38,11 +38,11 @@ More interestingly, you can create helper functions or aliases for different tas
 
 Here are some other aliases you can try::
 
-    # use Curl user agent, and update every 30 mins
-    $ alias news="ca -age=30 -A ''  http://getnews.tech"
+    # get news, update every 30 mins
+    $ alias news="ca -age=30  http://getnews.tech"
 
-    # get our IP but don't cache. Some sites check for curl user-agent
-    $ alias me="ca -f -A 'curl/7.88.1' ifconfig.me"
+    # get our IP but don't cache. Set the user-agent to some really old curl
+    $ alias me="ca -f -A 'curl/1.0.0' ifconfig.me"
 
     # In case you wake up and have no idea where you are...
     $ alias city="ca ifconfig.co/city"
@@ -54,7 +54,7 @@ Here are some other aliases you can try::
     $ alias broke="ca -age=60 rate.sx/ETH"
 
     # whois light?
-    $ alias where?="ca -f -A '' -prefix=ipinfo.io/"
+    $ alias where?="ca -f -prefix=ipinfo.io/"
     $ where? 127.0.0.1
     $ where? 8.8.4.4
 
@@ -64,17 +64,17 @@ Here are some other aliases you can try::
 
 For more examples see https://github.com/chubin/awesome-console-services
 
-Builtins
---------
+Templates
+---------
 
-To get you started, CA comes with a few "builtin" queries::
+To get you started, CA comes with a few template queries::
 
     $ ca @weather
     $ ca @weather dublin
     $ ca @go slices
     $ ca @btc
 
-To see all available builtins::
+To see all available templates::
 
    $ ca @help
 

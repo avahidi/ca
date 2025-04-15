@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"embed"
 	"fmt"
 	"log"
 	"os"
@@ -10,31 +8,18 @@ import (
 	"strings"
 )
 
-//go:embed builtins.txt
-var builtins embed.FS
-
-// defaultBuiltins will return the default list of builtins
-func defaultBuiltins() []string {
-	var ret []string
-
-	file, err := builtins.Open("builtins.txt")
-	if err != nil {
-		log.Fatalf("INTERNAL ERROR: failed when reading buildints: %v\n", err)
-	}
-	defer file.Close()
-
-	// Create a new scanner for the file
-	scanner := bufio.NewScanner(file)
-
-	// Read the file line by line
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if len(line) == 0 || line[0] == '#' {
-			continue
-		}
-		ret = append(ret, line)
-	}
-	return ret
+// defaultTemplates contains the built-in targets
+var defaultTemplates []string = []string{
+	"go,entry,P=https://cht.sh/go/",
+	"news,,M=30,http://getnews.tech",
+	"ip,,F,ifconfig.me",
+	"city,,ifconfig.co/city",
+	"weather,,M=120,wttr.in/",
+	"weather,city,M=120,P=wttr.in/",
+	"eth,,M=60,rate.sx/ETH",
+	"btc,,M=60,rate.sx/BTC",
+	"whois,what,F,P=ipinfo.io/",
+	"qrcode,item,M=99999,P=qrenco.de/",
 }
 
 // split function that also times the result
@@ -54,10 +39,6 @@ func parseTemplates(builtins []string) [][]string {
 	// Read the file line by line
 	for _, line := range builtins {
 		line := strings.TrimSpace(line)
-		if len(line) == 0 || line[0] == '#' {
-			continue
-		}
-
 		items := splitAndTrim(line, ",")
 		if len(items) < 3 {
 			log.Printf("WARNING: invalid line in builtins: '%s'", line)
@@ -155,12 +136,12 @@ func LoadFromBuiltin(p *Params, builtins, args []string) error {
 		p.Query = template[len(template)-1]
 		template = template[:len(template)-1]
 	}
+
 	for _, s := range template[2:] {
 		if err := applyTemplateItem(p, s); err != nil {
 			return err
 		}
 	}
-
 	return nil
 }
 

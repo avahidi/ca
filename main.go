@@ -8,27 +8,29 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"time"
 )
 
-// TIME_DATA_CACHE is the default age for a cached entry
-const TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
+const (
+	// TIME_DATA_CACHE is the default age for a cached entry
+	TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
+
+	// We need to pretend be curl sometimes
+	FAKE_CURL_USERAGENT = "curl/7.54.1"
+)
 
 // Config contains general app configuration
 type Config struct {
-	filename string
-	Curl     string
-	Builtins []string
+	filename  string
+	Templates []string
 }
 
 // NewConfig create a new configuration with default parameters
 func NewConfig(filename string) *Config {
 	return &Config{
-		filename: filename,
-		Curl:     "/usr/bin/curl",
-		Builtins: defaultBuiltins(),
+		filename:  filename,
+		Templates: []string{},
 	}
 }
 
@@ -57,7 +59,7 @@ func (c Config) Save() error {
 // Query is a helper class for the URL being accessed
 type Query struct {
 	params *Params
-	Url    *url.URL
+	url    *url.URL
 	HostId string
 	PathId string
 }
@@ -82,24 +84,18 @@ func NewQuery(p *Params) (*Query, error) {
 
 	return &Query{
 		params: p,
-		Url:    url,
+		url:    url,
 		HostId: base64.URLEncoding.EncodeToString([]byte(host)),
 		PathId: base64.URLEncoding.EncodeToString([]byte(path)),
 	}, nil
 }
 
-func (q Query) Get(c *Config) ([]byte, error) {
-	args := []string{"--silent"}
-	if q.params.UserAgent != "" {
-		args = append(args, "-A", q.params.UserAgent)
-	}
-	args = append(args, q.Url.String())
-	if q.params.Verbose {
-		fmt.Printf("INFO: calling curl with '%v'\n", args)
-	}
+func (q Query) Url() string {
+	return q.url.String()
+}
 
-	cmd := exec.Command(c.Curl, args...)
-	return cmd.Output()
+func (q Query) UserAgent() string {
+	return q.params.UserAgent
 }
 
 // Cache represents our cache system
@@ -182,7 +178,7 @@ type Params struct {
 // this function will first look for a @builtin and if found rewrite the parameters
 func parseParams(builtins []string) *Params {
 	prefix_ := flag.String("prefix", "", "Optional query prefix")
-	agent_ := flag.String("A", "CA-via-Curl/0.1", "User Agent, set \"\" to use Curl UA")
+	agent_ := flag.String("A", FAKE_CURL_USERAGENT, "User Agent, if you don't want to be curl")
 	noread_ := flag.Bool("f", false, "Force download (do not read from cache)")
 	nowrite_ := flag.Bool("n", false, "Do not write to cache")
 	verbose_ := flag.Bool("v", false, "Be verbose")
@@ -214,6 +210,7 @@ func parseParams(builtins []string) *Params {
 		}
 		p.Query = args[0]
 	}
+
 	return p
 }
 
@@ -233,11 +230,13 @@ func main() {
 	config := app.Config
 	if err := config.Load(); err != nil {
 		log.Printf("WARNING: failed to load config: %v", err)
-		config.Save() // config was just created, save it!
 	}
+	defer config.Save()
 
-	params := parseParams(config.Builtins)
+	// our templates are user-defined + built-ins
+	all_templates := append(config.Templates, defaultTemplates...)
 
+	params := parseParams(all_templates)
 	query, err := NewQuery(params)
 	if err != nil {
 		log.Fatalf("Cannot build query: %v\n", err)
@@ -261,7 +260,7 @@ func main() {
 		}
 	} else {
 		mode = "received"
-		content, err = query.Get(config)
+		content, err = download(query)
 		if err != nil {
 			if cexist {
 				mode = "cache-backup"
