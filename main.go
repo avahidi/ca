@@ -215,12 +215,19 @@ func parseParams(builtins []string) *Params {
 }
 
 func usage() {
+
 	fmt.Fprintf(os.Stderr, "Usage:\n"+
 		"    %s [OPTIONS] <query>\n"+
 		"    %s @<builtin> [optional parameter]\n"+
 		"Where OPTIONS are:\n",
 		os.Args[0], os.Args[0])
 	flag.PrintDefaults()
+
+	fmt.Fprintf(os.Stderr, "Example:\n"+
+		"    %s https://cht.sh/python/lambda\n"+
+		"    %s -age 30 http://ip-api.com\n"+
+		"    %s @weather berlin\n",
+		os.Args[0], os.Args[0], os.Args[0])
 }
 
 func main() {
