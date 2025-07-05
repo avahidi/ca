@@ -5,7 +5,7 @@ bin/ca: *.go
 	go build -o bin/ca
 
 run: bin/ca
-	bin/ca --prefix https://cht.sh/go/ strings
+	bin/ca "https://cht.sh/go/<what>" strings
 
 fmt:
 	go fmt ./...
@@ -21,3 +21,6 @@ bin:
 
 clean:
 	rm -rf bin
+
+clean-cache:
+	rm -rf ~/.cache/ca

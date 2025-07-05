@@ -10,143 +10,124 @@ import (
 
 // defaultTemplates contains the built-in targets
 var defaultTemplates []string = []string{
-	"go,entry,P=https://cht.sh/go/",
-	"news,,M=30,http://getnews.tech",
-	"ip,,F,ifconfig.me",
-	"city,,ifconfig.co/city",
-	"weather,,M=120,wttr.in/",
-	"weather,city,M=120,P=wttr.in/",
-	"eth,,M=60,rate.sx/ETH",
-	"btc,,M=60,rate.sx/BTC",
-	"whois,what,F,P=ipinfo.io/",
-	"qrcode,item,M=99999,P=qrenco.de/",
+	"go,https://cht.sh/go/<entry>",
+	"rust,https://cht.sh/rust/<entry>",
+	"news,M=30,http://getnews.tech",
+	"ip,F=1,https://ifconfig.me",
+	"city,ifconfig.co/city",
+	"weather,M=120,wttr.in/",
+	"weather,M=120,wttr.in/<city>",
+	"eth,M=60,rate.sx/ETH",
+	"btc,M=60,rate.sx/BTC",
+	"whois,F=1,ipinfo.io/<what>",
+	"qrcode,M=99999,qrenco.de/<item>",
 }
 
-// split function that also times the result
-func splitAndTrim(str, sep string) []string {
-	strs := strings.Split(str, sep)
-	for i, str := range strs {
-		strs[i] = strings.TrimSpace(str)
+type Template struct {
+	Name   string
+	Input  string
+	Query  *Query
+	Config map[byte]string
+}
+
+func TemplateFromString(source string) (*Template, error) {
+	validConfigs := "FMA"
+
+	// split and trim
+	parts := strings.Split(source, ",")
+	for i, str := range parts {
+		parts[i] = strings.TrimSpace(str)
 	}
-	return strs
+
+	if len(parts) < 2 {
+		return nil, fmt.Errorf("Not a valid template: '%s'", source)
+	}
+
+	query, err := QueryFromString(parts[len(parts)-1])
+	if err != nil {
+		return nil, err
+	}
+
+	t := &Template{
+		Name:   parts[0],
+		Input:  parts[len(parts)-1],
+		Query:  query,
+		Config: make(map[byte]string),
+	}
+
+	for _, part := range parts[1 : len(parts)-1] {
+		if len(part) < 3 || part[1] != '=' || strings.Index(validConfigs, part[:1]) == -1 {
+			return nil, fmt.Errorf("Unknown configuration '%s' in template'%s'", part, source)
+		}
+		t.Config[part[0]] = part[2:] // <config> = <value>
+	}
+
+	return t, nil
 }
 
-// parseTemplates will read and convert entries. Each entry looks like this
-// name,optional parameter, component 1, ...
-func parseTemplates(builtins []string) [][]string {
-	var ret [][]string
+func (t Template) Apply(p *Params) error {
+	p.Query = t.Query
 
-	// Read the file line by line
-	for _, line := range builtins {
-		line := strings.TrimSpace(line)
-		items := splitAndTrim(line, ",")
-		if len(items) < 3 {
-			log.Printf("WARNING: invalid line in builtins: '%s'", line)
+	for k, v := range t.Config {
+		switch k {
+		case 'A':
+			p.UserAgent = v
+		case 'F':
+			p.CacheRead = (v == "1" || v == "true")
+		case 'M':
+			n, err := strconv.ParseInt(v, 10, 32)
+			if err != nil {
+				return err
+			}
+			p.MaxAge = int(n)
+
+		default: // this should not happen as we check configs when creating Template...
+			return fmt.Errorf("Unknown template configuration in '%s'", t.Input)
+		}
+	}
+	return nil
+}
+
+// ApplyTemplate finds the template with given name and possibly param
+func ApplyTemplate(templates []*Template, p *Params, name string, paramCount int) error {
+	if name == "help" || name == "?" {
+		ShowTemplates(templates)
+		os.Exit(0)
+	}
+
+	var partialMatch *Template
+	for _, t := range templates {
+		if t.Name == name {
+			if len(t.Query.Params) == paramCount {
+				return t.Apply(p)
+			}
+			partialMatch = t
+		}
+	}
+
+	if partialMatch != nil {
+		return fmt.Errorf("Template '%s' found but requires parameters %+v", name, partialMatch.Query.Params)
+	}
+	return fmt.Errorf("Template '%s' not found", name)
+}
+
+func ParseTemplates(templates []string) []*Template {
+	var ret []*Template
+	for _, line := range templates {
+		t, err := TemplateFromString(line)
+		if err != nil {
+			log.Printf("WARNING - invalid template: '%s'", line)
 		} else {
-			ret = append(ret, items)
+			ret = append(ret, t)
 		}
 	}
 	return ret
 }
 
-// findTemplate finds the template with given name and possibly param
-func findTemplate(itemlist [][]string, name string, hasParam bool) ([]string, error) {
-	// 1. first finds the ones that match this target
-	var filterName [][]string
-	for _, items := range itemlist {
-		if items[0] == name {
-			filterName = append(filterName, items)
-		}
-	}
-
-	if len(filterName) == 0 {
-		return nil, fmt.Errorf("no matching builtins found")
-	}
-
-	// 2. see if any of those has the correct number of args
-	var filterParam [][]string
-	for _, items := range filterName {
-		if hasParam == (items[1] != "") {
-			filterParam = append(filterParam, items)
-		}
-	}
-
-	// see what we got, try to return useful error messages
-	switch len(filterParam) {
-	case 0:
-		if hasParam {
-			return nil, fmt.Errorf("no matching builtins found (one without a parameter exist)")
-		} else {
-			return nil, fmt.Errorf("no matching builtins found (one with a parameter exists)")
-		}
-	case 1:
-		return filterParam[0], nil
-	default:
-		return nil, fmt.Errorf("multiple matching builtins found")
-	}
-}
-
-func applyTemplateItem(p *Params, item string) error {
-	if strings.HasPrefix(item, "M=") {
-		n, err := strconv.ParseInt(item[2:], 10, 32)
-		if err != nil {
-			return err
-		}
-		p.MaxAge = int(n)
-	} else if strings.HasPrefix(item, "P=") {
-		p.Prefix = item[2:]
-	} else if strings.HasPrefix(item, "A=") {
-		p.UserAgent = item[2:]
-	} else if item == "F" {
-		p.CacheRead = false
-	} else {
-		return fmt.Errorf("unknown parameter in builtin: %s", item)
-	}
-	return nil
-}
-
 // showBuiltins will dump all builtins
-func showBuiltins(builtins []string) {
-	itemlist := parseTemplates(builtins)
-
-	fmt.Printf("Valid items are:\n ")
-	for _, item := range itemlist {
-		fmt.Printf("\t@%-30s  %v\n", fmt.Sprintf("%s %s", item[0], item[1]), item[2:])
+func ShowTemplates(templates []*Template) {
+	fmt.Printf("Valid templates are:\n ")
+	for _, t := range templates {
+		fmt.Printf("\t@%-30s  %+v\n", t.Name, t.Query.Params)
 	}
-}
-
-func LoadFromBuiltin(p *Params, builtins, args []string) error {
-	name := args[0][1:]
-
-	// help is a special case
-	if name == "help" || name == "?" {
-		showBuiltins(builtins)
-		os.Exit(0)
-	}
-
-	itemlist := parseTemplates(builtins)
-	template, err := findTemplate(itemlist, name, len(args) != 1)
-	if err != nil {
-		return err
-	}
-
-	if len(args) == 2 {
-		p.Query = args[1]
-	} else {
-		p.Query = template[len(template)-1]
-		template = template[:len(template)-1]
-	}
-
-	for _, s := range template[2:] {
-		if err := applyTemplateItem(p, s); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// returns true if the command line is of type 'progm @name [optional parameter]'
-func ArgsIsBuiltin(args []string) bool {
-	count := len(args)
-	return (count == 1 || count == 2) && args[0][0] == '@'
 }

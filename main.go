@@ -1,23 +1,20 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path"
-	"time"
 )
 
 const (
-	// TIME_DATA_CACHE is the default age for a cached entry
-	TIME_DATA_CACHE time.Duration = 14 * 24 * time.Hour
+	// TimeDataCache is the default age for a cached entry
+	TimeDataCache = 60 * 12
 
 	// We need to pretend be curl sometimes
-	FAKE_CURL_USERAGENT = "curl/7.54.1"
+	FakeCurlAgent = "curl/7.54.1"
 )
 
 // Config contains general app configuration
@@ -56,140 +53,35 @@ func (c Config) Save() error {
 	return os.WriteFile(c.filename, bs, 0700)
 }
 
-// Query is a helper class for the URL being accessed
-type Query struct {
-	params *Params
-	url    *url.URL
-	HostId string
-	PathId string
-}
-
-// NewQuery creates a new Query from an url
-func NewQuery(p *Params) (*Query, error) {
-	url, err := url.Parse(p.Prefix + p.Query)
-	if err != nil {
-		return nil, err
-	}
-	if url.Scheme == "" {
-		url.Scheme = "https"
-	}
-	host := url.Scheme + "//" + url.Host
-	if url.Port() != "" {
-		host += ":" + url.Port()
-	}
-	path := url.Path
-	if path == "" {
-		path = "/"
-	}
-
-	return &Query{
-		params: p,
-		url:    url,
-		HostId: base64.URLEncoding.EncodeToString([]byte(host)),
-		PathId: base64.URLEncoding.EncodeToString([]byte(path)),
-	}, nil
-}
-
-func (q Query) Url() string {
-	return q.url.String()
-}
-
-func (q Query) UserAgent() string {
-	return q.params.UserAgent
-}
-
-// Cache represents our cache system
-type Cache struct {
-	base string
-}
-
-func NewCache(base string) *Cache {
-	return &Cache{base: base}
-}
-
-func (c Cache) file(q Query) string {
-	return path.Join(c.base, q.HostId, q.PathId)
-}
-
-func (c Cache) folder(q Query) string {
-	return path.Join(c.base, q.HostId)
-}
-
-func (c Cache) Check(q Query, maxAge int) (exists bool, isRecent bool) {
-	info, err := os.Stat(c.file(q))
-	if err != nil {
-		return false, false
-	}
-
-	age := time.Since(info.ModTime()).Minutes()
-	return true, age <= float64(maxAge)
-}
-
-func (c Cache) Read(q Query) ([]byte, error) {
-	return os.ReadFile(c.file(q))
-}
-
-func (c Cache) Write(q Query, content []byte) error {
-	folder := c.folder(q)
-	if err := os.MkdirAll(folder, 0700); err != nil {
-		return err
-	}
-
-	filename := c.file(q)
-	return os.WriteFile(filename, content, 0600)
-}
-
-// Application represents the application contect
-type Application struct {
-	Cache  *Cache
-	Config *Config
-}
-
-func NewApplication() *Application {
-	// set up the relevant folders and
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Panic(err)
-	}
-
-	a := &Application{
-		Cache:  NewCache(path.Join(home, ".cache/ca")),
-		Config: NewConfig(path.Join(home, ".config/ca.conf")),
-	}
-
-	if err := os.MkdirAll(a.Cache.base, 0700); err != nil {
-		log.Panic(err)
-	}
-	return a
-}
-
 // Params contains the parameters used for this call
 type Params struct {
+	Query      *Query
+	Params     []string
 	UserAgent  string
-	Query      string
-	Prefix     string
 	CacheRead  bool
 	CacheWrite bool
 	MaxAge     int
 	Verbose    bool
 }
 
-// parseParams will parse command line arguments and build the parameters
-// this function will first look for a @builtin and if found rewrite the parameters
-func parseParams(builtins []string) *Params {
-	prefix_ := flag.String("prefix", "", "Optional query prefix")
-	agent_ := flag.String("A", FAKE_CURL_USERAGENT, "User Agent, if you don't want to be curl")
+func (p Params) URL() (string, error) {
+	return p.Query.Build(p.Params)
+}
+
+// parseArgs  will parse command line arguments and build the parameters.
+// If a template is used, it will try to get it from the list of templates
+func parseArgs(templates []*Template) (*Params, error) {
+	agent_ := flag.String("A", FakeCurlAgent, "User Agent, if you don't want to be curl")
 	noread_ := flag.Bool("f", false, "Force download (do not read from cache)")
 	nowrite_ := flag.Bool("n", false, "Do not write to cache")
 	verbose_ := flag.Bool("v", false, "Be verbose")
-	maxage_ := flag.Int("age", 3*24, "Max cache age in minutes")
+	maxage_ := flag.Int("age", TimeDataCache, "Max cache age in minutes")
 
 	flag.Usage = usage
 	flag.Parse()
 
 	p := &Params{
 		UserAgent:  *agent_,
-		Prefix:     *prefix_,
 		Verbose:    *verbose_,
 		MaxAge:     *maxage_,
 		CacheRead:  !*noread_,
@@ -197,25 +89,27 @@ func parseParams(builtins []string) *Params {
 	}
 
 	args := flag.Args()
-	if ArgsIsBuiltin(args) {
-		if err := LoadFromBuiltin(p, builtins, args); err != nil {
-			fmt.Printf("%v\n", err)
-			flag.Usage()
-			os.Exit(1)
-		}
-	} else {
-		if len(args) != 1 {
-			flag.Usage()
-			os.Exit(1)
-		}
-		p.Query = args[0]
+	if len(args) == 0 {
+		return nil, fmt.Errorf("no query was given")
 	}
 
-	return p
+	p.Params = args[1:]
+	base := args[0]
+	if base[0] == '@' {
+		if err := ApplyTemplate(templates, p, base[1:], len(p.Params)); err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		p.Query, err = QueryFromString(args[0])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
 }
 
 func usage() {
-
 	fmt.Fprintf(os.Stderr, "Usage:\n"+
 		"    %s [OPTIONS] <query>\n"+
 		"    %s @<builtin> [optional parameter]\n"+
@@ -230,68 +124,94 @@ func usage() {
 		os.Args[0], os.Args[0], os.Args[0])
 }
 
+func get(params *Params, cache *Cache, request *Request) ([]byte, string, error) {
+	exists := false
+	recent := false
+
+	if params.CacheRead {
+		exists, recent = cache.Check(request, params.MaxAge)
+		if exists && recent {
+			content, err := cache.Read(request)
+			return content, "cached", err
+		}
+	}
+
+	content, err := request.Download()
+	if err != nil {
+		// we couldn't download but maybe we happen to have an old copy in the cache?
+		if exists {
+			log.Printf("Using old cache due to server failure: %v\n", err)
+			content, err = cache.Read(request)
+			return content, "cache-backup", err
+		}
+		return nil, "failed", err
+	}
+
+	if params.CacheWrite {
+		if err := cache.Write(request, content); err != nil {
+			log.Printf("Unable to write to cache: %v\n", err)
+		}
+	}
+
+	return content, "received", nil
+}
+
 func main() {
-	app := NewApplication()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Cannot find our home directory: %v", err)
+	}
+
+	// prepare cache
+	cache := NewCache(path.Join(home, ".cache/ca"))
+	if err := os.MkdirAll(cache.base, 0700); err != nil {
+		log.Fatalf("Cannot create cache folder: %v", err)
+	}
 
 	// Load configuration
-	config := app.Config
+	config := NewConfig(path.Join(home, ".config/ca.conf"))
 	if err := config.Load(); err != nil {
 		log.Printf("WARNING: failed to load config: %v", err)
 	}
-	defer config.Save()
 
-	// our templates are user-defined + built-ins
-	all_templates := append(config.Templates, defaultTemplates...)
+	// empty config? lets fill it
+	if len(config.Templates) == 0 {
+		config.Templates = defaultTemplates
+		config.Save()
+	}
 
-	params := parseParams(all_templates)
-	query, err := NewQuery(params)
+	// load our templates
+	templates := ParseTemplates(config.Templates)
+
+	// get params from command line arguments + templates
+	params, err := parseArgs(templates)
 	if err != nil {
-		log.Fatalf("Cannot build query: %v\n", err)
+		fmt.Printf("%v\n", err)
+		usage()
+		os.Exit(20)
 	}
 
-	// try get data from cache, if possible and allowed
-	cache := app.Cache
-	var cexist, crecent bool
-	if params.CacheRead {
-		cexist, crecent = cache.Check(*query, params.MaxAge)
+	urlstr, err := params.URL()
+	if err != nil {
+		log.Fatalf("Could not get URL: %v\n", err)
 	}
 
-	var content []byte
-	var mode string
-
-	if cexist && crecent {
-		mode = "cached"
-		content, err = cache.Read(*query)
-		if err != nil {
-			log.Fatalf("Failed to read content from cache: %v\n", err)
-		}
-	} else {
-		mode = "received"
-		content, err = download(query)
-		if err != nil {
-			if cexist {
-				mode = "cache-backup"
-				log.Printf("Using old cache due to server failure: %v\n", err)
-				content, err = cache.Read(*query)
-				if err != nil {
-					log.Fatalf("Failed to read content from cache: %v\n", err)
-				}
-			} else {
-				log.Fatalf("Failed to get content from server: %v\n", err)
-			}
-		} else if params.CacheWrite {
-			err = cache.Write(*query, content)
-			if err != nil {
-				log.Printf("Unable to write to cache: %v\n", err)
-			}
-		}
+	request, err := NewRequest(urlstr, params.UserAgent)
+	if err != nil {
+		log.Fatalf("Cannot build request: %v\n", err)
 	}
 
-	// update mode with cache read/write state
-	if params.Verbose {
-		fmt.Printf("INFO: %s R=%v W=%v\n", mode, params.CacheRead, params.CacheWrite)
+	content, mode, err := get(params, cache, request)
+	if err != nil {
+		log.Fatalf("Failed to get content: %v\n", err)
 	}
 
 	// print outcome
 	fmt.Printf("%s\n", string(content))
+
+	// print mode and cache read/write state
+	if params.Verbose {
+		fmt.Printf("INFO: mode=%s R=%v W=%v\n", mode, params.CacheRead, params.CacheWrite)
+	}
+
 }
